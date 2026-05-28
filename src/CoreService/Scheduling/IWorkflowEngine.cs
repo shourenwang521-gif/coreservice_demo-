@@ -14,8 +14,17 @@ public interface IWorkflowEngine
     /// <summary>正在执行的工艺流程 ID（null 表示空闲）。</summary>
     string? CurrentWorkflowId { get; }
 
+    /// <summary>暂停当前正在执行的工艺流程（在当前步骤完成后暂停）。</summary>
+    Task PauseAsync();
+
+    /// <summary>恢复已暂停的工艺流程。</summary>
+    Task ResumeAsync();
+
     /// <summary>取消当前正在执行的工艺流程。</summary>
     Task CancelCurrentWorkflowAsync();
+
+    /// <summary>当前是否处于暂停状态。</summary>
+    bool IsPaused { get; }
 
     /// <summary>步骤开始执行时触发。</summary>
     event EventHandler<StepExecutionResult>? StepStarted;

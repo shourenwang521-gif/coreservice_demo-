@@ -186,14 +186,45 @@ workflow.RootGroup.Steps.AddRange(new[]
     },
 });
 
-// --- 4. 执行工艺流程 ---
-Console.WriteLine("\n===== 开始执行工艺流程 =====");
+// --- 4. 通过 ExperimentController 外部接口控制工艺流程 ---
+Console.WriteLine("\n===== 通过外部接口控制实验 =====");
 var engine = new WorkflowEngine(deviceManager, weLogger);
 var workflowService = new WorkflowService(engine, wsLogger);
+var ecLogger = loggerFactory.CreateLogger<ExperimentController>();
+var controller = new ExperimentController(workflowService, engine, ecLogger);
 
-var result = await workflowService.ExecuteWorkflowAsync(workflow);
+// 监听状态变更事件
+controller.StatusChanged += (_, e) =>
+    Console.WriteLine($"  [EVENT] 实验状态: {e.OldStatus} -> {e.NewStatus} ({e.Message})");
+
+// 4a. 启动实验
+Console.WriteLine("\n--- 4a. 启动实验 ---");
+var started = await controller.StartAsync(workflow);
+Console.WriteLine($"启动结果: {started}, 状态: {controller.Status}");
+
+// 等待几个步骤执行
+await Task.Delay(50);
+
+// 4b. 暂停实验
+Console.WriteLine("\n--- 4b. 暂停实验 ---");
+var paused = await controller.PauseAsync();
+Console.WriteLine($"暂停结果: {paused}, 状态: {controller.Status}");
+
+// 暂停期间可以做其他操作（如人工检查）
+Console.WriteLine("  模拟人工检查中...");
+await Task.Delay(200);
+
+// 4c. 恢复实验
+Console.WriteLine("\n--- 4c. 恢复实验 ---");
+var resumed = await controller.ResumeAsync();
+Console.WriteLine($"恢复结果: {resumed}, 状态: {controller.Status}");
+
+// 等待实验完成
+for (int i = 0; i < 200 && controller.Status == ExperimentStatus.Running; i++)
+    await Task.Delay(50);
 
 // --- 5. 输出结果 ---
+var result = controller.LastResult!;
 Console.WriteLine($"\n===== 执行结果 =====");
 Console.WriteLine($"工艺流程: {workflow.Name}");
 Console.WriteLine($"状态:     {result.Status}");
@@ -210,12 +241,46 @@ foreach (var sr in result.StepResults)
 if (!string.IsNullOrEmpty(result.ErrorMessage))
     Console.WriteLine($"\nError: {result.ErrorMessage}");
 
-// --- 6. 查询设备最终状态 ---
+// --- 6. 演示停止功能（再次启动后立即停止） ---
+Console.WriteLine("\n===== 演示停止功能 =====");
+var workflow2 = new WorkflowDefinition
+{
+    Name = "第二次实验（将被停止）",
+    RootGroup = new WorkflowStepGroup
+    {
+        ExecutionMode = StepExecutionMode.Serial,
+        Steps = Enumerable.Range(1, 50).Select(i => new WorkflowStep
+        {
+            Name = $"长步骤 {i}",
+            DeviceId = "robot-01",
+            Action = "home",
+            Order = i,
+        }).ToList(),
+    },
+};
+
+await controller.StartAsync(workflow2);
+await Task.Delay(30);
+var stopped = await controller.StopAsync();
+Console.WriteLine($"停止结果: {stopped}, 最终状态: {controller.Status}");
+Console.WriteLine($"已执行步骤数: {controller.LastResult?.StepResults.Count ?? 0} / 50");
+
+// --- 7. 查询设备最终状态 ---
 Console.WriteLine("\n===== 设备状态 =====");
 var allStatus = await deviceManager.GetAllStatusAsync();
 foreach (var (deviceId, status) in allStatus)
 {
     Console.WriteLine($"  {deviceId}: {string.Join(", ", status.Select(kv => $"{kv.Key}={kv.Value}"))}");
 }
+
+// --- 8. TCP 服务器说明 ---
+Console.WriteLine("\n===== TCP 远程控制接口说明 =====");
+Console.WriteLine("ExperimentTcpServer 支持通过 TCP 连接控制实验：");
+Console.WriteLine("  START <workflowId>  - 启动实验");
+Console.WriteLine("  STOP                - 停止实验");
+Console.WriteLine("  PAUSE               - 暂停实验");
+Console.WriteLine("  RESUME              - 恢复实验");
+Console.WriteLine("  STATUS              - 查询状态");
+Console.WriteLine("  QUIT                - 断开连接");
 
 Console.WriteLine("\n===== Demo 完成 =====");

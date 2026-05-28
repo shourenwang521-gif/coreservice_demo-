@@ -16,17 +16,41 @@ public class WorkflowEngine : IWorkflowEngine
     private readonly DeviceManager _deviceManager;
     private readonly ILogger<WorkflowEngine> _logger;
     private CancellationTokenSource? _workflowCts;
+    private readonly ManualResetEventSlim _pauseGate = new(true); // initially not paused
 
     public string? CurrentWorkflowId { get; private set; }
+    public bool IsPaused { get; private set; }
 
     public event EventHandler<StepExecutionResult>? StepStarted;
     public event EventHandler<StepExecutionResult>? StepCompleted;
     public event EventHandler<WorkflowExecutionResult>? WorkflowCompleted;
+    public event EventHandler? Paused;
+    public event EventHandler? Resumed;
 
     public WorkflowEngine(DeviceManager deviceManager, ILogger<WorkflowEngine> logger)
     {
         _deviceManager = deviceManager;
         _logger = logger;
+    }
+
+    public Task PauseAsync()
+    {
+        if (CurrentWorkflowId == null || IsPaused) return Task.CompletedTask;
+        IsPaused = true;
+        _pauseGate.Reset();
+        _logger.LogWarning("Workflow [{Id}] PAUSED", CurrentWorkflowId);
+        Paused?.Invoke(this, EventArgs.Empty);
+        return Task.CompletedTask;
+    }
+
+    public Task ResumeAsync()
+    {
+        if (!IsPaused) return Task.CompletedTask;
+        IsPaused = false;
+        _pauseGate.Set();
+        _logger.LogInformation("Workflow [{Id}] RESUMED", CurrentWorkflowId);
+        Resumed?.Invoke(this, EventArgs.Empty);
+        return Task.CompletedTask;
     }
 
     public async Task<WorkflowExecutionResult> ExecuteWorkflowAsync(
@@ -37,6 +61,8 @@ public class WorkflowEngine : IWorkflowEngine
 
         _workflowCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         CurrentWorkflowId = workflow.WorkflowId;
+        IsPaused = false;
+        _pauseGate.Set();
 
         var result = new WorkflowExecutionResult
         {
@@ -126,6 +152,14 @@ public class WorkflowEngine : IWorkflowEngine
         }
     }
 
+    /// <summary>在每个步骤执行前检查暂停状态，阻塞直到恢复或取消。</summary>
+    private void WaitIfPaused(CancellationToken ct)
+    {
+        if (!IsPaused) return;
+        _logger.LogInformation("Workflow paused, waiting for resume...");
+        _pauseGate.Wait(ct); // blocks until resumed or cancelled
+    }
+
     /// <summary>串行执行：逐一执行每个步骤/子组。</summary>
     private async Task<List<StepExecutionResult>> ExecuteSerialAsync(
         List<(int Order, WorkflowStep? Step, WorkflowStepGroup? SubGroup)> items,
@@ -135,6 +169,7 @@ public class WorkflowEngine : IWorkflowEngine
 
         foreach (var (_, step, subGroup) in items)
         {
+            WaitIfPaused(ct);
             ct.ThrowIfCancellationRequested();
 
             if (subGroup != null)
@@ -204,6 +239,7 @@ public class WorkflowEngine : IWorkflowEngine
 
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
+            WaitIfPaused(ct);
             ct.ThrowIfCancellationRequested();
 
             var stepResult = new StepExecutionResult

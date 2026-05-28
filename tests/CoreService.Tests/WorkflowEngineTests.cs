@@ -250,4 +250,41 @@ public class WorkflowEngineTests
         Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
         Assert.True(result.StepResults.Count < 100);
     }
+
+    [Fact]
+    public async Task PauseAndResume_WorkflowCompletesAfterResume()
+    {
+        var (dm, engine) = Setup();
+        await dm.ConnectAllAsync();
+
+        var workflow = new WorkflowDefinition
+        {
+            Name = "Pause/Resume Test",
+            RootGroup = new WorkflowStepGroup
+            {
+                ExecutionMode = StepExecutionMode.Serial,
+                Steps = Enumerable.Range(1, 10).Select(i => new WorkflowStep
+                {
+                    Name = $"Step {i}",
+                    DeviceId = "robot-01",
+                    Action = "home",
+                    Order = i,
+                }).ToList(),
+            },
+        };
+
+        var task = engine.ExecuteWorkflowAsync(workflow);
+        await Task.Delay(20);
+
+        await engine.PauseAsync();
+        Assert.True(engine.IsPaused);
+
+        await Task.Delay(100);
+        await engine.ResumeAsync();
+        Assert.False(engine.IsPaused);
+
+        var result = await task;
+        Assert.Equal(WorkflowExecutionStatus.Completed, result.Status);
+        Assert.Equal(10, result.StepResults.Count);
+    }
 }
